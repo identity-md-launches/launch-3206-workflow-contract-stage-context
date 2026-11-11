@@ -1,6 +1,6 @@
 # The Firm website rules
 
-Built by a separate order after the launch of SPEC.md, against the deployed addresses of that launch (Base mainnet 8453).
+Built in the same order as the launch of SPEC.md, against the addresses of that launch (Base mainnet 8453); LpGovernor, PriceGuard and Burner addresses are read from LpDesk's views.
 
 - First screen of the home page: directly under the logo, the slogan "Don't work for the firm. Let the firm work for you." in exactly this text. (fail, don't change)
 - All addresses and numbers are fixed; if a step cannot be met, fail instead of changing them.

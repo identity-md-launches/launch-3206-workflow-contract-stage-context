@@ -126,7 +126,7 @@ No ETH, USDC or other developer capital funds this launch. The only recurring co
 
 ## Roadmap
 
-1. Launch on Base: NOTSTOCK token, NOTSTOCK/IMD pool, FirmVault, GenesisSplitter, LpDesk with Burner; right after, LpDesk's modules by deployModule. The website follows by a separate order.
+1. Launch on Base: NOTSTOCK token, NOTSTOCK/IMD pool, FirmVault, GenesisSplitter, LpDesk with Burner; right after, LpDesk's modules by deployModule. The website of SITE.md is built in the same order.
 2. LpDesk on Base: positions against the listed assets on any listed venue (the six of SPEC.md section 2b plus any added by AddVenue vote), opened directly by the operator in the first 7 days, by OpenPosition vote after, and closed by the operator at any time with no vote, back to LpDesk's free balance; the price and every range are set by hand, with no reference-price check; an open or top-up reverts if an existing pool's price differs from the given price by more than 0.5%; new assets only by AddAsset vote, which takes only the asset address; new venues only by AddVenue vote, which takes only the position manager address and its kind.
 
 ### Step 3: multichain (a separate swarm order after launch, once NOTSTOCK trades)
