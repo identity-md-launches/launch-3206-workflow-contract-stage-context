@@ -1346,6 +1346,11 @@
   },
   {
     "type": "error",
+    "name": "MulDivOverflow",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NeedsNotstock",
     "inputs": []
   },
@@ -1357,6 +1362,11 @@
   {
     "type": "error",
     "name": "NotGovernor",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotLocked",
     "inputs": []
   },
   {

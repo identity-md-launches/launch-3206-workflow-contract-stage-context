@@ -141,7 +141,10 @@ contract VenueV4 {
         _returnAll(key.currency0, key.currency1);
     }
 
+    /// @dev A zero-liquidity poke reverts in v4 (CannotUpdateEmptyPosition) and an empty position has no
+    /// fees left (its last decrease took them), so an emptied position is skipped.
     function collect(Position memory p) external onlyLpDesk {
+        if (IV4PositionManager(p.manager).getPositionLiquidity(p.tokenId) == 0) return;
         _decrease(p, 0, 0, 0);
     }
 
@@ -173,7 +176,7 @@ contract VenueV4 {
         onlyLpDesk
         returns (uint256 amountOut)
     {
-        return _swap(IV4PositionManager(p.manager).poolManager(), keyOf(p), tokenIn, amountIn, minOut, to);
+        return _swap(IV4PositionManager(p.manager).poolManager(), keyOf(p), tokenIn, amountIn, minOut, to, lpDesk);
     }
 
     /// @notice FirmVault buyback in the registered NOTSTOCK/IMD pool (its key, hook included, from LpDesk's views).
@@ -183,7 +186,7 @@ contract VenueV4 {
     {
         if (msg.sender != ILpDesk(lpDesk).firmVault()) revert NotAllowed();
         address poolManager = IV4PositionManager(0x7C5f5A4bBd8fD63184577525326123B519429bDc).poolManager();
-        return _swap(poolManager, key, tokenIn, amountIn, minOut, to);
+        return _swap(poolManager, key, tokenIn, amountIn, minOut, to, msg.sender);
     }
 
     function _swap(
@@ -192,12 +195,13 @@ contract VenueV4 {
         address tokenIn,
         uint256 amountIn,
         uint256 minOut,
-        address to
+        address to,
+        address refundTo
     ) internal returns (uint256 amountOut) {
         (, bool exists) = _price(poolManager, key);
         if (!exists) revert NoPool();
         _expectedManager = poolManager;
-        bytes memory result = IV4PoolManager(poolManager).unlock(abi.encode(key, tokenIn, amountIn, to));
+        bytes memory result = IV4PoolManager(poolManager).unlock(abi.encode(key, tokenIn, amountIn, to, refundTo));
         _expectedManager = address(0);
         amountOut = abi.decode(result, (uint256));
         if (amountOut < minOut) revert BelowMinOut();
@@ -206,8 +210,8 @@ contract VenueV4 {
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         address poolManager = _expectedManager;
         if (poolManager == address(0) || msg.sender != poolManager) revert NotPoolManager();
-        (PoolKey memory key, address tokenIn, uint256 amountIn, address to) =
-            abi.decode(data, (PoolKey, address, uint256, address));
+        (PoolKey memory key, address tokenIn, uint256 amountIn, address to, address refundTo) =
+            abi.decode(data, (PoolKey, address, uint256, address, address));
         bool zeroForOne = tokenIn == key.currency0;
         int256 delta = IV4PoolManager(poolManager)
             .swap(
@@ -229,7 +233,8 @@ contract VenueV4 {
         IV4PoolManager(poolManager).settle();
         uint256 out = uint256(uint128(outDelta));
         IV4PoolManager(poolManager).take(zeroForOne ? key.currency1 : key.currency0, to, out);
-        if (owed < amountIn) _send(tokenIn, lpDesk, amountIn - owed);
+        // Unspent input of a partial fill goes back to the caller (LpDesk or FirmVault), which re-credits it.
+        if (owed < amountIn) _send(tokenIn, refundTo, amountIn - owed);
         return abi.encode(out);
     }
 

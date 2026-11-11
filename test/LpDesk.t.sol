@@ -8,6 +8,7 @@ import {FirmMath} from "../src/libraries/FirmMath.sol";
 import {OpenParams, Position} from "../src/interfaces/IFirm.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockV3Venue, MockV3Pool} from "./mocks/MockV3Venue.sol";
+import {ICLPositionManager} from "../src/interfaces/IVenues.sol";
 
 /// @notice LpDesk positions on the V3 and CL venue kinds, with the mock venues etched at the Base
 /// addresses of PriceGuard's fixed list (Uniswap v3, PancakeSwap v3, Aerodrome Slipstream).
@@ -173,16 +174,125 @@ contract LpDeskTest is FirmBase {
         desk.open(p);
     }
 
+    /// @dev The 0.5% band applies to the price (sqrtPrice squared), not to sqrtPriceX96: a sqrt price 0.4%
+    /// off is a price about 0.8% off and reverts; a sqrt price 0.2% off (price about 0.4% off) opens.
     function test_openPriceCheckAgainstExistingPool() public {
         (address t0, address t1) = FirmMath.sort(address(token), WETH);
         uni.createPoolAt(t0, t1, 3000, ONE * 1006 / 1000);
         OpenParams memory p = _params(WETH, UNI_V3, 3000, 0, 1e18);
+        MockV3Pool pool = MockV3Pool(uni.getPool(t0, t1, uint24(3000)));
+        uint160[4] memory outside =
+            [ONE * 1006 / 1000, ONE * 1004 / 1000, uint160(79545075164321394943918126137), ONE * 996 / 1000];
+        for (uint256 i; i < outside.length; ++i) {
+            pool.setPrice(outside[i]);
+            vm.prank(OPERATOR);
+            vm.expectRevert(LpDesk.PriceMoved.selector);
+            desk.open(p);
+        }
+        pool.setPrice(ONE * 1002 / 1000);
+        vm.prank(OPERATOR);
+        desk.open(p);
+        pool.setPrice(ONE * 998 / 1000);
+        vm.prank(OPERATOR);
+        desk.open(p);
+    }
+
+    function _isqrt(uint256 x) internal pure returns (uint256 z) {
+        if (x == 0) return 0;
+        z = x;
+        uint256 y = (x + 1) / 2;
+        while (y < z) {
+            z = y;
+            y = (x / y + y) / 2;
+        }
+    }
+
+    /// @dev Exact band edges: a pool price of exactly +0.5% or -0.5% passes, one unit of sqrt price beyond fails.
+    function test_priceBandEdges() public {
+        (address t0, address t1) = FirmMath.sort(address(token), WETH);
+        uni.createPoolAt(t0, t1, 3000, ONE);
+        MockV3Pool pool = MockV3Pool(uni.getPool(t0, t1, uint24(3000)));
+        OpenParams memory p = _params(WETH, UNI_V3, 3000, 0, 1e18);
+        // sqrt(1.005) * 2^96 and sqrt(0.995) * 2^96, rounded inward.
+        uint160 hiEdge = uint160(_isqrt(uint256(ONE) * uint256(ONE) / 1000 * 1005));
+        uint160 loEdge = uint160(_isqrt(uint256(ONE) * uint256(ONE) / 1000 * 995) + 1);
+        pool.setPrice(hiEdge);
+        vm.prank(OPERATOR);
+        desk.open(p);
+        pool.setPrice(loEdge);
+        vm.prank(OPERATOR);
+        desk.open(p);
+        pool.setPrice(hiEdge + 2);
         vm.prank(OPERATOR);
         vm.expectRevert(LpDesk.PriceMoved.selector);
         desk.open(p);
-        MockV3Pool(uni.getPool(t0, t1, uint24(3000))).setPrice(ONE * 1004 / 1000);
+        pool.setPrice(loEdge - 2);
+        vm.prank(OPERATOR);
+        vm.expectRevert(LpDesk.PriceMoved.selector);
+        desk.open(p);
+    }
+
+    /// @dev An open on an existing pool whose price is inside the band but not exactly the given price is
+    /// quoted at the pool's own price, so a two-sided range takes both amounts in proportion.
+    function test_twoSidedOpenOnExistingPoolAtDriftedPrice() public {
+        (address t0, address t1) = FirmMath.sort(address(token), WETH);
+        uint160 poolPrice = ONE * 1002 / 1000;
+        uni.createPoolAt(t0, t1, 3000, poolPrice);
+        weth.mint(address(desk), 10e18);
+        OpenParams memory p = _params(WETH, UNI_V3, 3000, 0, 1e18);
+        (p.tickLower, p.tickUpper) = (int24(-600), int24(600));
+        Position memory q = Position(UNI_V3, 1, WETH, 3000, 60, -600, 600, 0, true);
+        (uint256 n, uint256 a,) = v3.quote(q, poolPrice, 1e18, false);
+        (p.amount0Min, p.amount1Min) =
+            _notIs0(WETH) ? (n * 995 / 1000, a * 995 / 1000) : (a * 995 / 1000, n * 995 / 1000);
+        uint256 notBefore = token.balanceOf(address(desk));
+        uint256 wethBefore = weth.balanceOf(address(desk));
         vm.prank(OPERATOR);
         desk.open(p);
+        assertApproxEqAbs(notBefore - token.balanceOf(address(desk)), n, 2, "NOTSTOCK at the pool's price");
+        assertApproxEqAbs(wethBefore - weth.balanceOf(address(desk)), a, 2, "asset at the pool's price");
+    }
+
+    /// @dev Aerodrome Slipstream creates the pool whenever mint's sqrtPriceX96 is nonzero, and creating an
+    /// existing pool reverts (the mock follows that). A second open and a shift on an existing CL pool mint
+    /// with sqrtPriceX96 = 0.
+    function test_clSecondOpenAndShiftOnExistingPool() public {
+        OpenParams memory p = _params(WETH, AERO_CL, 0, 200, 1_000e18);
+        vm.prank(OPERATOR);
+        uint256 id = desk.open(p);
+        vm.prank(OPERATOR);
+        uint256 id2 = desk.open(p);
+        assertEq(desk.position(id2).manager, AERO_CL);
+        (int24 lo, int24 hi) = _notIs0(WETH) ? (int24(200), int24(8000)) : (int24(-8000), int24(-200));
+        vm.prank(OPERATOR);
+        uint256 newId = desk.shift(id, lo, hi, 0, 0, 0, 0);
+        Position memory moved = desk.position(newId);
+        assertEq(moved.tickLower, lo);
+        assertEq(moved.tickUpper, hi);
+        assertFalse(desk.position(id).open);
+        assertGt(desk.positionLiquidity(newId), 0);
+    }
+
+    /// @dev A direct mint with a nonzero price on an existing CL pool is exactly what Slipstream refuses.
+    function test_clMockRefusesCreateOnExistingPool() public {
+        (address t0, address t1) = FirmMath.sort(address(token), WETH);
+        aero.createPoolAt(t0, t1, 200, ONE);
+        ICLPositionManager.MintParams memory m = ICLPositionManager.MintParams({
+            token0: t0,
+            token1: t1,
+            tickSpacing: 200,
+            tickLower: -200,
+            tickUpper: 200,
+            amount0Desired: 0,
+            amount1Desired: 0,
+            amount0Min: 0,
+            amount1Min: 0,
+            recipient: address(this),
+            deadline: block.timestamp,
+            sqrtPriceX96: ONE
+        });
+        vm.expectRevert(bytes("pool exists"));
+        aero.mint(m);
     }
 
     function test_openOnPancakeCreatesPoolAtGivenPrice() public {
@@ -394,6 +504,66 @@ contract LpDeskTest is FirmBase {
         assertEq(token.balanceOf(DEAD) - deadBefore, quoted, "all NOTSTOCK out to dead");
         assertEq(desk.buybackBasket(WETH), basket - 1e18);
         assertEq(weth.balanceOf(address(v3)), 0);
+    }
+
+    /// @dev The pool consumes only 1e18 of a 2e18 buyback: 1e18 leaves the basket, the unspent 1e18 stays in
+    /// it, and the free balance does not grow.
+    function test_buybackPartialFillStaysInBasket() public {
+        uint256 id = _open(WETH, UNI_V3, 1_000e18);
+        _accrue(uni, desk.position(id).tokenId, WETH, 0, 8e18);
+        vm.prank(OPERATOR);
+        desk.collect(id);
+        assertEq(desk.buybackBasket(WETH), 2e18);
+        (address t0, address t1) = FirmMath.sort(address(token), WETH);
+        MockV3Pool pool = MockV3Pool(uni.getPool(t0, t1, uint24(3000)));
+        vm.prank(address(factory));
+        token.transfer(address(pool), 10e18);
+        pool.setMaxIn(1e18);
+        uint256 freeBefore = desk.freeBalance(WETH);
+        uint256 quoted = pool.quoteOut(WETH == t0, 1e18);
+        vm.prank(OPERATOR);
+        desk.buyback(id, 2e18, 0);
+        assertEq(desk.buybackBasket(WETH), 1e18, "unspent input stays in the buyback basket");
+        assertEq(desk.freeBalance(WETH), freeBefore, "free balance unchanged");
+        assertEq(token.balanceOf(DEAD), quoted);
+        assertEq(weth.balanceOf(address(v3)), 0);
+    }
+
+    /// @dev increaseLiquidity collects and splits owed fees before topping up: the project wallet receives
+    /// its quarter and the basket pays only for the new liquidity.
+    function test_increaseLiquidityCollectsFeesFirst() public {
+        uint256 id = _open(WETH, UNI_V3, 1_000e18);
+        _accrue(uni, desk.position(id).tokenId, WETH, 0, 8e18);
+        vm.prank(OPERATOR);
+        desk.collect(id);
+        // An asset-only position: open two-sided, then shift to an asset-side range.
+        OpenParams memory p = _params(WETH, UNI_V3, 3000, 0, 1e18);
+        (p.tickLower, p.tickUpper) = (int24(-6000), int24(6000));
+        (uint256 n, uint256 a,) = v3.quote(Position(UNI_V3, 1, WETH, 3000, 60, -6000, 6000, 0, true), ONE, 1e18, false);
+        (p.amount0Min, p.amount1Min) =
+            _notIs0(WETH) ? (n * 995 / 1000, a * 995 / 1000) : (a * 995 / 1000, n * 995 / 1000);
+        vm.prank(OPERATOR);
+        uint256 id2 = desk.open(p);
+        (int24 lo, int24 hi) = _notIs0(WETH) ? (int24(-6000), int24(-60)) : (int24(60), int24(6000));
+        vm.prank(OPERATOR);
+        uint256 id3 = desk.shift(id2, lo, hi, 0, 0, 0, 0);
+        _accrue(uni, desk.position(id3).tokenId, WETH, 4e18, 4e18);
+        uint256 projectBefore = weth.balanceOf(PROJECT);
+        uint256 burnerBefore = token.balanceOf(desk.burner());
+        uint256 buybackBefore = desk.buybackBasket(WETH);
+        uint256 basket = desk.topUpBasket(WETH) + 1e18; // after the split adds its quarter
+        (,, uint128 quoted) = v3.quote(desk.position(id3), ONE, 1e18, true);
+        uint256 wethBefore = weth.balanceOf(address(desk));
+        vm.prank(OPERATOR);
+        desk.increaseLiquidity(id3, 1e18, ONE, quoted * 995 / 1000);
+        assertEq(weth.balanceOf(PROJECT) - projectBefore, 1e18, "project wallet quarter");
+        assertEq(desk.buybackBasket(WETH) - buybackBefore, 1e18, "buyback quarter");
+        assertEq(token.balanceOf(desk.burner()) - burnerBefore, 4e18, "NOTSTOCK fees to Burner");
+        // WETH in: 4e18 fees; out: 1e18 project, `used` into the position.
+        uint256 used = wethBefore + 4e18 - 1e18 - weth.balanceOf(address(desk));
+        assertEq(basket - desk.topUpBasket(WETH), used, "basket pays exactly the new liquidity");
+        assertGt(used, 0);
+        assertLe(used, 1e18);
     }
 
     function test_buybackRejectsImdPosition() public {

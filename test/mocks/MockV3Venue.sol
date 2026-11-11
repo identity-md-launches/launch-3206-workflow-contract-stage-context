@@ -18,6 +18,9 @@ contract MockV3Pool {
     uint160 public sqrtPriceX96;
     bool public pancake;
     uint256 public constant FEE_BPS = 100;
+    /// @dev Test helper: when nonzero, a swap consumes at most this much input (a fill that stops at the
+    /// price limit), like a real pool whose liquidity in that direction runs out.
+    uint256 public maxIn;
 
     constructor(address t0, address t1, uint160 price, bool pancake_) {
         token0 = t0;
@@ -28,6 +31,10 @@ contract MockV3Pool {
 
     function setPrice(uint160 price) external {
         sqrtPriceX96 = price;
+    }
+
+    function setMaxIn(uint256 m) external {
+        maxIn = m;
     }
 
     function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool) {
@@ -46,6 +53,7 @@ contract MockV3Pool {
     {
         require(amountSpecified > 0, "exact in only");
         uint256 amountIn = uint256(amountSpecified);
+        if (maxIn != 0 && amountIn > maxIn) amountIn = maxIn;
         uint256 out = quoteOut(zeroForOne, amountIn);
         (address tIn, address tOut) = zeroForOne ? (token0, token1) : (token1, token0);
         uint256 before = IERC20(tIn).balanceOf(address(this));
@@ -154,6 +162,11 @@ contract MockV3Venue {
         returns (uint256, uint128, uint256, uint256)
     {
         require(isCL, "V3 manager");
+        // Slipstream semantics: a nonzero sqrtPriceX96 calls CLFactory.createPool, which reverts when the
+        // pool exists; a zero one requires the pool to exist.
+        bytes32 k = keccak256(abi.encode(p.token0, p.token1, uint256(int256(p.tickSpacing))));
+        if (p.sqrtPriceX96 != 0) require(_pools[k] == address(0), "pool exists");
+        else require(_pools[k] != address(0), "no pool");
         address pool = _create(p.token0, p.token1, uint256(int256(p.tickSpacing)), p.sqrtPriceX96);
         return _mint(
             pool, p.tickLower, p.tickUpper, p.amount0Desired, p.amount1Desired, p.amount0Min, p.amount1Min, p.recipient

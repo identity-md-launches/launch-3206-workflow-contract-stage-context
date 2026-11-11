@@ -72,20 +72,35 @@ owner, mint, burn, fee, pause or upgrade, and that is what LaunchToken is.
   a listed asset (IMD, WETH, USDC, cbBTC, nine Coinbase B20 stocks; more only by an executed AddAsset).
   Nothing removes a venue or an asset.
 - Bootstrap: for 604 800 seconds from registerNotStock the operator opens positions directly; after that
-  only an executed OpenPosition proposal opens one. Opens on an existing pool revert when its price is
-  more than 0.5% from the given sqrtPriceX96; a missing pool is created at that price. Minimums must be
-  at least 99.5% of the quoted amounts (a governor open sets exactly that).
+  only an executed OpenPosition proposal opens one. Opens and top-ups on an existing pool revert when its
+  price (sqrtPriceX96 squared, not the square root) is more than 0.5% above or below the price given by
+  sqrtPriceX96; inside that band they are quoted and minted at the pool's own price. A missing pool is
+  created at the given price (on Aerodrome Slipstream the price is passed to mint only to create a
+  missing pool; an existing CL pool is minted into with sqrtPriceX96 = 0). Minimums must be at least 99.5%
+  of the quoted amounts (a governor open sets exactly that).
 - At any time the operator collects fees, shifts a range (`shift`, which closes the position and opens a
   new one with the same venue, pair and tier), moves liquidity between two positions of the same asset
   (`moveLiquidity`), closes (`close`), tops up from the top-up basket (`increaseLiquidity`, no NOTSTOCK
   taken), buys back from the buyback basket into the dead address (`buyback`, never for an IMD position)
   and burns free NOTSTOCK (`burn`). Every minimum out on shift, close and buyback is the operator's own
-  argument: the contracts compare nothing with a market price.
+  argument: the contracts compare nothing with a market price. `increaseLiquidity` collects and splits the
+  position's owed fees first, like every other position action. A buyback (LpDesk's or FirmVault's) that
+  the pool fills only partly takes from the basket or bucket only what it spent; the unspent input
+  returns to that basket or bucket. A V4 position emptied by `moveLiquidity` skips the fee poke, so it can
+  still be closed.
 - LpGovernor: stake NOTSTOCK (held by LpGovernor, returned on unstake at any time); proposals of kind
   OpenPosition, AddAsset, AddVenue, AddBridge, BridgeOut from a staker with at least 0.1% of the stake
   (the operator with any); weight and quorum base checkpointed at the block before creation; 3-day vote,
   3% quorum and a for-majority; 2-day operator veto; execute by anyone in the next 259 200 seconds, once;
-  one open proposal per kind from non-operators and one per kind from the operator.
+  one open proposal per kind from non-operators and one per kind from the operator. `execute` refuses ETH
+  except for a BridgeOut (whose msg.value is the LayerZero fee). A BridgeOut amount must be a multiple of
+  10^12 (the OFT drops dust below 6 shared decimals, and minAmountLD equals amountLD).
+- BridgeOut lockbox check. NOTSTOCK has a fixed supply, so its OFT on Base is a lockbox adapter. LpDesk's
+  bridgeOut reverts (`NotLocked`) unless the adapter's send() took exactly `amount` from LpDesk and the
+  adapter's own NOTSTOCK balance grew by exactly `amount`. This stops an adapter that pulls the tokens to
+  another address. It cannot prove what a voted-in adapter does with tokens it has locked: which adapter
+  is trusted is decided by the AddBridge vote and the operator's 2-day veto, and the operator should veto
+  any AddBridge whose adapter is not the audited NOTSTOCK OFT adapter wired to the LayerZero endpoint.
 - No function moves a held asset to any wallet but the project wallet (its 25% fee share), the dead
   address (buybacks, burns), Burner (NOTSTOCK fees) or a registered destination LpDesk (executed BridgeOut).
 - LpDesk never deposits a position NFT into any staking, gauge or farm contract; positions earn only
@@ -169,6 +184,21 @@ only and must be exercised on a fork before deployment. See ADAPTATION.md.
 - FirmAddresses hardcodes roles (low): the library is removed; roles are constructor arguments and the
   factory is the constructor's msg.sender.
 - Operator trust (info) and review scope (info): documented above.
+
+## Revision findings (second review)
+
+- CL mint on an existing pool (high): fixed; VenueV3 passes sqrtPriceX96 to Slipstream's mint only when
+  the pool is missing. The mock CL manager now refuses to create an existing pool, as Slipstream does.
+- increaseLiquidity without collecting first (medium): fixed; it calls the collect-and-split first.
+- 0.5% band applied to sqrtPriceX96 (medium): fixed; the band is applied to the price (the squared ratio).
+- V4 open quoted at the given price (medium): fixed; an existing pool is quoted and minted at its own
+  price once it passes the 0.5% gate (increaseLiquidity likewise).
+- Fake bridge adapter (medium): fixed for diversion in the send call (lockbox balance check); the
+  residual trust in a voted-in adapter is documented above.
+- Buyback partial fill (medium): fixed; only the consumed input leaves the basket or bucket.
+- execute payable (low), empty V4 position (low), BridgeOut dust (low): fixed, tested (the V4 one
+  against a PositionManager stand-in that reverts on an empty poke).
+- IMD owner can blacklist (info): no source change; documented under Assumptions and trust.
 
 ## Files
 

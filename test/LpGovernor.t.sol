@@ -10,6 +10,8 @@ import {OpenParams, Position} from "../src/interfaces/IFirm.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockV3Venue, MockV3Pool} from "./mocks/MockV3Venue.sol";
 import {MockOFT} from "./mocks/MockOFT.sol";
+import {IOFT} from "../src/interfaces/IVenues.sol";
+import {IERC20} from "../src/interfaces/IERC20.sol";
 
 /// @notice LpGovernor: staking checkpoints, proposal gates, vote, veto, execute, expiry and bridges.
 contract LpGovernorTest is FirmBase {
@@ -293,6 +295,51 @@ contract LpGovernorTest is FirmBase {
 
     // ------------------------------------------------------------ bridges
 
+    function _addBridge(address adapter) internal returns (uint256 bridgeId) {
+        vm.prank(alice);
+        uint256 id = gov.proposeAddBridge(adapter, 30101, address(0xDE5C));
+        _pass(id);
+        gov.execute(id);
+        bridgeId = gov.bridgeCount() - 1;
+    }
+
+    /// @dev An adapter that answers token() == NOTSTOCK but sends the pulled NOTSTOCK elsewhere: the
+    /// executed BridgeOut reverts because the amount was not locked in the adapter.
+    function test_bridgeOutRevertsUnlessLockedInAdapter() public {
+        DivertingAdapter fake = new DivertingAdapter(address(token), carol);
+        uint256 bridgeId = _addBridge(address(fake));
+        vm.prank(alice);
+        uint256 out = gov.proposeBridgeOut(bridgeId, 5e18);
+        _pass(out);
+        uint256 carolBefore = token.balanceOf(carol);
+        vm.expectRevert(LpDesk.NotLocked.selector);
+        gov.execute(out);
+        assertEq(token.balanceOf(address(desk)), 500_000_000e18);
+        assertEq(token.balanceOf(carol), carolBefore);
+    }
+
+    function test_bridgeOutAmountMustBeOftUnit() public {
+        uint256 bridgeId = _addBridge(address(new MockOFT(address(token))));
+        vm.prank(alice);
+        vm.expectRevert(LpGovernor.NotBridgeUnit.selector);
+        gov.proposeBridgeOut(bridgeId, 1e18 + 1);
+        vm.prank(alice);
+        gov.proposeBridgeOut(bridgeId, 1e18 + 1e12);
+    }
+
+    function test_executeRefusesEthExceptBridgeOut() public {
+        MockOFT adapter = new MockOFT(address(token));
+        vm.prank(alice);
+        uint256 id = gov.proposeAddBridge(address(adapter), 30101, address(0xDE5C));
+        _pass(id);
+        vm.deal(bob, 1 ether);
+        vm.prank(bob);
+        vm.expectRevert(LpGovernor.UnexpectedValue.selector);
+        gov.execute{value: 1 ether}(id);
+        gov.execute(id);
+        assertEq(address(gov).balance, 0);
+    }
+
     function test_bridgeRecordsAndBridgeOut() public {
         MockOFT wrong = new MockOFT(WETH);
         vm.prank(alice);
@@ -332,5 +379,21 @@ contract LpGovernorTest is FirmBase {
         assertEq(token.allowance(address(desk), address(adapter)), 0, "approval reset");
         assertEq(token.balanceOf(address(desk)), 500_000_000e18 - 5e18);
         assertEq(gov.bridgedOut(0), 5e18);
+        assertEq(token.balanceOf(address(adapter)), 5e18, "locked in the adapter");
+    }
+}
+
+/// @dev token() is NOTSTOCK, but send() pulls the amount to a third address instead of locking it.
+contract DivertingAdapter {
+    address public immutable token;
+    address public immutable beneficiary;
+
+    constructor(address token_, address beneficiary_) {
+        token = token_;
+        beneficiary = beneficiary_;
+    }
+
+    function send(IOFT.SendParam calldata p, IOFT.MessagingFee calldata, address) external payable {
+        require(IERC20(token).transferFrom(msg.sender, beneficiary, p.amountLD), "pull");
     }
 }

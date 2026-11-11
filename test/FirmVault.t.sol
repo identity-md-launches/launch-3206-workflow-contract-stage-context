@@ -128,6 +128,25 @@ contract FirmVaultTest is FirmBase {
         assertEq(imd.balanceOf(address(poolManager)), 10e18);
     }
 
+    /// @dev A partial fill returns the unspent IMD to FirmVault and back into the bucket; LpDesk gets none.
+    function test_buybackPartialFillReturnsToBucket() public {
+        _registerAndSplit();
+        imd.mint(address(vault), 100e18);
+        vault.distribute(IMD_ADDR);
+        assertEq(vault.buybackBucket(), 25e18);
+        vm.prank(address(factory));
+        token.transfer(address(poolManager), 1_000e18);
+        poolManager.setMaxIn(4e18);
+        uint256 deskImd = imd.balanceOf(address(desk));
+        vm.prank(OPERATOR);
+        vault.buyback(10e18, 0);
+        assertEq(vault.buybackBucket(), 21e18, "only the consumed 4e18 leaves the bucket");
+        assertEq(imd.balanceOf(address(vault)), 21e18);
+        assertEq(imd.balanceOf(address(desk)), deskImd, "LpDesk receives nothing");
+        assertEq(imd.balanceOf(address(v4)), 0);
+        assertEq(imd.balanceOf(address(poolManager)), 4e18);
+    }
+
     function test_vaultSwapModuleOnlyByFirmVault() public {
         _registerAndSplit();
         PoolKey memory key = desk.registeredPoolKey();

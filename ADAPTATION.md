@@ -47,3 +47,11 @@ unchanged; no owner power, pause, upgrade or minting was added.
     `position(id)`, `positions()` and `positionLiquidity(id)`. These are views only. Pending (uncollected)
     fees per position are not computed on chain beyond the venue's own `positions()` tokensOwed; the
     section 2a "pending fees" read is left to the venue's view through the recorded tokenId.
+11. Revision. Choices made for reproduced review findings: (a) the 0.5% open/top-up check compares prices
+    (the square of the sqrtPriceX96 ratio), and an existing pool is quoted at its own price once inside
+    that band; (b) VenueV3 passes sqrtPriceX96 to a Slipstream mint only to create a missing pool;
+    (c) a partly filled buyback re-credits the unspent input (VenueV4 returns it to the caller, LpDesk or
+    FirmVault); (d) BridgeOut amounts are multiples of 10^12 and bridgeOut requires the amount to be
+    locked in the adapter itself, the only on-chain check available for an adapter deployed later by a
+    separate order. The module creation code hashes in LpDesk were recomputed for the changed modules
+    (LpGovernor, VenueV3, VenueV4); PriceGuard is unchanged.

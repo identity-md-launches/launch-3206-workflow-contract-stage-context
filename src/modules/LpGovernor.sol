@@ -59,6 +59,9 @@ contract LpGovernor {
     uint256 public constant EXECUTE_SECONDS = 259_200;
     uint256 public constant QUORUM_BPS = 300; // 3%
     uint256 public constant THRESHOLD_BPS = 10; // 0.1%
+    /// @dev LayerZero OFT v2 drops amounts below sharedDecimals (6) of an 18-decimal token, so a BridgeOut
+    /// with minAmountLD == amountLD executes only for a multiple of 10^12.
+    uint256 public constant BRIDGE_UNIT = 1e12;
 
     ILpDesk public immutable lpDesk;
 
@@ -97,6 +100,8 @@ contract LpGovernor {
     error WrongAdapter();
     error UnknownBridge();
     error ZeroAmount();
+    error NotBridgeUnit();
+    error UnexpectedValue();
 
     constructor() {
         lpDesk = ILpDesk(msg.sender);
@@ -207,6 +212,7 @@ contract LpGovernor {
     function proposeBridgeOut(uint256 bridgeId, uint256 amount) external returns (uint256) {
         if (bridgeId >= _bridges.length) revert UnknownBridge();
         if (amount == 0) revert ZeroAmount();
+        if (amount % BRIDGE_UNIT != 0) revert NotBridgeUnit();
         if (amount > lpDesk.freeBalance(lpDesk.token())) revert AboveFree();
         return _create(Kind.BridgeOut, abi.encode(bridgeId, amount));
     }
@@ -263,6 +269,8 @@ contract LpGovernor {
     function execute(uint256 id) external payable {
         if (state(id) != State.Executable) revert NotExecutable();
         Proposal storage p = _proposals[id];
+        // Only a BridgeOut forwards msg.value (the LayerZero fee); ETH sent with any other kind would be locked.
+        if (p.kind != Kind.BridgeOut && msg.value != 0) revert UnexpectedValue();
         p.executed = true;
         if (p.kind == Kind.OpenPosition) {
             OpenParams memory params = abi.decode(p.data, (OpenParams));

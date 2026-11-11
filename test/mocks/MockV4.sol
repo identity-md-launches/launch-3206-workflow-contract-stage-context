@@ -20,6 +20,12 @@ contract MockV4PoolManager {
     uint256 internal _syncedBalance;
     bool internal _unlocked;
     int256 internal _owedIn;
+    /// @dev Test helper: when nonzero, a swap consumes at most this much input (a partial fill).
+    uint256 public maxIn;
+
+    function setMaxIn(uint256 m) external {
+        maxIn = m;
+    }
 
     function setPrice(PoolKey memory key, uint160 sqrtPriceX96) external {
         priceOf[keccak256(abi.encode(key))] = sqrtPriceX96;
@@ -61,6 +67,7 @@ contract MockV4PoolManager {
         require(_unlocked, "ManagerLocked");
         require(params.amountSpecified < 0, "exact in only");
         uint256 amountIn = uint256(-params.amountSpecified);
+        if (maxIn != 0 && amountIn > maxIn) amountIn = maxIn;
         uint256 out = quoteOut(key, params.zeroForOne, amountIn);
         _owedIn = int256(amountIn);
         int256 a0 = params.zeroForOne ? -int256(amountIn) : int256(out);

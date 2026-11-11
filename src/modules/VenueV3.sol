@@ -130,6 +130,9 @@ contract VenueV3 {
         _approve(t0, p.manager, a0);
         _approve(t1, p.manager, a1);
         if (p.kind == KIND_CL) {
+            // Slipstream's mint creates the pool whenever sqrtPriceX96 != 0, and creating an existing pool
+            // reverts; so the price is passed only to create a missing pool, and 0 on an existing one.
+            uint160 createAt = poolOf(p) == address(0) ? sqrtPriceX96 : 0;
             (tokenId,,,) = ICLPositionManager(p.manager)
                 .mint(
                     ICLPositionManager.MintParams({
@@ -144,7 +147,7 @@ contract VenueV3 {
                         amount1Min: 0,
                         recipient: lpDesk,
                         deadline: block.timestamp,
-                        sqrtPriceX96: sqrtPriceX96
+                        sqrtPriceX96: createAt
                     })
                 );
         } else {

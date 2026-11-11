@@ -6,6 +6,19 @@
   },
   {
     "type": "function",
+    "name": "BRIDGE_UNIT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "EXECUTE_SECONDS",
     "inputs": [],
     "outputs": [
@@ -811,6 +824,11 @@
   },
   {
     "type": "error",
+    "name": "NotBridgeUnit",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotExecutable",
     "inputs": []
   },
@@ -827,6 +845,11 @@
   {
     "type": "error",
     "name": "TransferFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnexpectedValue",
     "inputs": []
   },
   {

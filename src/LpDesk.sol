@@ -15,6 +15,7 @@ import {
     MODULE_VENUEV4
 } from "./interfaces/IFirm.sol";
 import {Burner} from "./Burner.sol";
+import {FirmMath} from "./libraries/FirmMath.sol";
 
 interface IFirmVaultCredit {
     function creditFromLpDesk(uint256 amount) external;
@@ -35,10 +36,10 @@ contract LpDesk {
     uint256 public constant MIN_BPS = 9_950; // 99.5%
 
     /// @dev keccak256(type(Module).creationCode) of every module (README "Contracts" says how they are recomputed).
-    bytes32 public constant LPGOVERNOR_CODE_HASH = 0xaf24e820fcddd18df8dda8fbf770c9f59dac9bc3bd422faf8834781d415bce52;
+    bytes32 public constant LPGOVERNOR_CODE_HASH = 0x0fc46e72ec8b2bcdf990b19aa94fa75b36772ba3760f759310a8c124896bec92;
     bytes32 public constant PRICEGUARD_CODE_HASH = 0xd7cbfc1e3a02e71d5d069f3a6c86379cfc5e71fb9f944dc09fa25266b28f606d;
-    bytes32 public constant VENUEV3_CODE_HASH = 0x13ae5f17d13aa5309f6cc9b155bde36af3305c28f99ea5774fede9a491a29615;
-    bytes32 public constant VENUEV4_CODE_HASH = 0x6ba6cb706bc214a7556235da290a263f40cb62c639adbd21fe4fce46ae4f7ccb;
+    bytes32 public constant VENUEV3_CODE_HASH = 0x4728bed9169bb2058437c604cd5cc8ba12f224b15b162b6aed33e0b5f0569aa6;
+    bytes32 public constant VENUEV4_CODE_HASH = 0xf3b9ae535cff2be3df93543e093219876fd10175986b1e50e5b56c3179f569e6;
 
     // ---------------------------------------------------------------- immutables
     address public immutable token;
@@ -94,6 +95,7 @@ contract LpDesk {
     error ImdNotBuyable();
     error TransferFailed();
     error ZeroAddress();
+    error NotLocked();
 
     modifier onlyOperator() {
         if (msg.sender != operator) revert NotOperator();
@@ -250,7 +252,10 @@ contract LpDesk {
         );
         (uint160 current, bool exists) = m.poolPrice(pos);
         if (exists && !_within(current, p.sqrtPriceX96)) revert PriceMoved();
-        (uint256 amountNot, uint256 amountAsset, uint128 liquidity) = m.quote(pos, p.sqrtPriceX96, p.amount, false);
+        // An existing pool is quoted and minted at its own price (within 0.5% of the given one); a new pool
+        // is created at the given price.
+        uint160 at = exists ? current : p.sqrtPriceX96;
+        (uint256 amountNot, uint256 amountAsset, uint128 liquidity) = m.quote(pos, at, p.amount, false);
         if (amountNot == 0 || liquidity == 0) revert NeedsNotstock();
         if (amountNot > freeBalance(token)) revert AboveFree();
         if (amountAsset > freeBalance(p.asset)) revert AboveFree();
@@ -260,7 +265,7 @@ contract LpDesk {
         _push(p.asset, address(m), amountAsset);
         uint256 notBefore = IERC20(token).balanceOf(address(this));
         uint256 assetBefore = IERC20(p.asset).balanceOf(address(this));
-        pos.tokenId = m.mint(pos, p.sqrtPriceX96, liquidity, amountNot, amountAsset);
+        pos.tokenId = m.mint(pos, at, liquidity, amountNot, amountAsset);
         _checkUsed(pos, amountNot, amountAsset, notBefore, assetBefore, min0, min1);
         id = _positions.length;
         _positions.push(pos);
@@ -360,11 +365,13 @@ contract LpDesk {
         onlyOperator
     {
         Position memory pos = _openPosition(id);
+        // Owed fees are collected and split first, so the venue never nets them into the top-up.
+        _collectAndSplit(pos);
         if (amount > topUpBasket[pos.asset]) revert AboveBasket();
         IVenueModule m = _module(pos.kind);
         (uint160 current,) = m.poolPrice(pos);
         if (!_within(current, sqrtPriceX96)) revert PriceMoved();
-        (uint256 amountNot, uint256 amountAsset, uint128 liquidity) = m.quote(pos, sqrtPriceX96, amount, true);
+        (uint256 amountNot, uint256 amountAsset, uint128 liquidity) = m.quote(pos, current, amount, true);
         if (amountNot != 0) revert NeedsNotstock();
         if (liquidity == 0 || amountAsset == 0) revert NothingTaken();
         if (uint256(minLiquidity) < uint256(liquidity) * MIN_BPS / 10_000) revert MinTooLow();
@@ -384,11 +391,15 @@ contract LpDesk {
         Position memory pos = _openPosition(id);
         if (pos.asset == IMD) revert ImdNotBuyable();
         if (amount > buybackBasket[pos.asset]) revert AboveBasket();
-        buybackBasket[pos.asset] -= amount;
         IVenueModule m = _module(pos.kind);
         _push(pos.asset, address(m), amount);
+        uint256 before = IERC20(pos.asset).balanceOf(address(this));
         uint256 out = m.swapExactIn(pos, pos.asset, amount, minOut, DEAD);
-        emit Buyback(id, amount, out);
+        // A partial fill (the pool ran out of liquidity at the price limit) returns the unspent input;
+        // only what the swap consumed leaves the buyback basket, the rest stays in it.
+        uint256 spent = amount - (IERC20(pos.asset).balanceOf(address(this)) - before);
+        buybackBasket[pos.asset] -= spent;
+        emit Buyback(id, spent, out);
     }
 
     /// @notice Sends `amount` of free NOTSTOCK to the dead address.
@@ -425,6 +436,8 @@ contract LpDesk {
     {
         if (msg.sender != lpGovernor) revert NotGovernor();
         if (amount > freeBalance(token)) revert AboveFree();
+        uint256 deskBefore = IERC20(token).balanceOf(address(this));
+        uint256 lockedBefore = IERC20(token).balanceOf(adapter);
         IERC20(token).approve(adapter, amount);
         IOFT(adapter).send{value: msg.value}(
             IOFT.SendParam({
@@ -440,6 +453,12 @@ contract LpDesk {
             refund
         );
         IERC20(token).approve(adapter, 0);
+        // NOTSTOCK has a fixed supply, so its OFT on Base is a lockbox adapter: send() must lock exactly
+        // `amount` in the adapter itself. Anything else (tokens pulled to another address) reverts.
+        if (
+            deskBefore - IERC20(token).balanceOf(address(this)) != amount
+                || IERC20(token).balanceOf(adapter) - lockedBefore != amount
+        ) revert NotLocked();
         emit BridgedOut(adapter, dstEid, dstLpDesk, amount);
     }
 
@@ -450,9 +469,16 @@ contract LpDesk {
         if (!pos.open) revert PositionClosedError();
     }
 
+    /// @dev True when the price (sqrtPrice squared) of `actual` is within 0.5% of the price of `ref`, in
+    /// either direction. The square-root ratio r = actual/ref is taken in Q96, and r^2 is compared.
     function _within(uint256 actual, uint256 ref) internal pure returns (bool) {
-        uint256 diff = actual > ref ? actual - ref : ref - actual;
-        return diff * 10_000 <= ref * PRICE_TOLERANCE_BPS;
+        if (ref == 0) return false;
+        uint256 q96 = 1 << 96;
+        uint256 r = FirmMath.mulDiv(actual, q96, ref);
+        if (r > 2 * q96) return false;
+        uint256 ratio = FirmMath.mulDiv(r, r, q96);
+        return ratio * 10_000 <= q96 * (10_000 + PRICE_TOLERANCE_BPS)
+            && ratio * 10_000 >= q96 * (10_000 - PRICE_TOLERANCE_BPS);
     }
 
     /// @dev Withdraws all liquidity to free balance, checks the operator's minimum outs, burns the NFT.

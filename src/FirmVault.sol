@@ -107,11 +107,14 @@ contract FirmVault {
         if (amount > buybackBucket) revert AboveBucket();
         address swapModule = lpDesk_.venueV4();
         if (swapModule.code.length == 0) revert NoSwapModule();
-        buybackBucket -= amount;
         _send(IMD, swapModule, amount);
+        uint256 before = IERC20(IMD).balanceOf(address(this));
         uint256 out =
             IDeskSwapV4(swapModule).swapExactInForVault(lpDesk_.registeredPoolKey(), IMD, amount, minOut, DEAD);
-        emit Buyback(amount, out);
+        // A partial fill returns the unspent IMD here; only what the swap consumed leaves the bucket.
+        uint256 spent = amount - (IERC20(IMD).balanceOf(address(this)) - before);
+        buybackBucket -= spent;
+        emit Buyback(spent, out);
     }
 
     function _send(address token, address to, uint256 amount) internal {
