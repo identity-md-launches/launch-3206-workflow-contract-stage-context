@@ -221,10 +221,34 @@ contract ForkLaunchTest is Test {
         splitter.split();
     }
 
+    /// @dev Runs one fork scenario as its own call and, if that call reverted, runs it again from the same
+    /// state after a pause, up to three attempts. The job's RPC endpoint is rate-limited upstream: a
+    /// storage read it answers with HTTP 429 fails the call that needed it (seen on 2026-11-11 in the
+    /// Slipstream leg of test_fork_venuesOpenCollectClose), and the reverted call leaves no state behind,
+    /// so a retry re-reads the slot. A real failure fails every attempt and the last one's revert data is
+    /// raised unchanged, so no assertion is weakened.
+    function _retrying(bytes memory callData) internal {
+        for (uint256 attempt;; ++attempt) {
+            (bool ok, bytes memory ret) = address(this).call(callData);
+            if (ok) return;
+            if (attempt == 2) {
+                assembly {
+                    revert(add(ret, 32), mload(ret))
+                }
+            }
+            vm.sleep(2000 * (attempt + 1));
+        }
+    }
+
     // ------------------------------------------------------------------ tests
 
     function test_fork_fullLaunchRehearsal() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_fullLaunchRehearsal, ()));
+    }
+
+    /// @dev Body of test_fork_fullLaunchRehearsal, run as its own call by _retrying.
+    function fork_fullLaunchRehearsal() external {
         assertEq(block.chainid, 8453);
         _launch();
 
@@ -295,6 +319,11 @@ contract ForkLaunchTest is Test {
 
     function test_fork_launchGasUnderBlockBound() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_launchGasUnderBlockBound, ()));
+    }
+
+    /// @dev Body of test_fork_launchGasUnderBlockBound, run as its own call by _retrying.
+    function fork_launchGasUnderBlockBound() external {
         _launch();
         emit log_named_uint("launch transaction gas", launchGas);
         assertLt(launchGas, 16_777_216);
@@ -302,6 +331,11 @@ contract ForkLaunchTest is Test {
 
     function test_fork_onlyProjectWalletSetsRequester() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_onlyProjectWalletSetsRequester, ()));
+    }
+
+    /// @dev Body of test_fork_onlyProjectWalletSetsRequester, run as its own call by _retrying.
+    function fork_onlyProjectWalletSetsRequester() external {
         _launch();
         _modules();
         vm.prank(PROJECT);
@@ -323,6 +357,11 @@ contract ForkLaunchTest is Test {
 
     function test_fork_registerRefusesShortSplitter() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_registerRefusesShortSplitter, ()));
+    }
+
+    /// @dev Body of test_fork_registerRefusesShortSplitter, run as its own call by _retrying.
+    function fork_registerRefusesShortSplitter() external {
         _launch();
         _modules();
         vm.startPrank(PROJECT);
@@ -340,6 +379,11 @@ contract ForkLaunchTest is Test {
 
     function test_fork_vaultNotstockFeesBurnThroughBurner() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_vaultNotstockFeesBurnThroughBurner, ()));
+    }
+
+    /// @dev Body of test_fork_vaultNotstockFeesBurnThroughBurner, run as its own call by _retrying.
+    function fork_vaultNotstockFeesBurnThroughBurner() external {
         _launch();
         _modules();
         _postLaunch();
@@ -360,6 +404,11 @@ contract ForkLaunchTest is Test {
     /// @dev The registered launch pool's buyback: the live IMD token and the live Uniswap v4 PoolManager.
     function test_fork_vaultDistributeImdAndBuybackInLivePool() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_vaultDistributeImdAndBuybackInLivePool, ()));
+    }
+
+    /// @dev Body of test_fork_vaultDistributeImdAndBuybackInLivePool, run as its own call by _retrying.
+    function fork_vaultDistributeImdAndBuybackInLivePool() external {
         _launch();
         _modules();
         _postLaunch();
@@ -511,13 +560,23 @@ contract ForkLaunchTest is Test {
         int24[6] memory spacings = [int24(60), 0, 0, 0, 200, 200];
         uint256 snap = vm.snapshotState();
         for (uint256 i; i < managers.length; ++i) {
-            _openCollectClose(managers[i], fees[i], spacings[i]);
+            _retrying(abi.encodeCall(this.fork_openCollectClose, (managers[i], fees[i], spacings[i])));
             vm.revertToState(snap);
         }
     }
 
+    /// @dev One venue of test_fork_venuesOpenCollectClose, run as its own call by _retrying.
+    function fork_openCollectClose(address venue, uint24 fee, int24 ts) external {
+        _openCollectClose(venue, fee, ts);
+    }
+
     function test_fork_venuesAtDeployAndUnlistedManager() public {
         if (!forked) vm.skip(true);
+        _retrying(abi.encodeCall(this.fork_venuesAtDeployAndUnlistedManager, ()));
+    }
+
+    /// @dev Body of test_fork_venuesAtDeployAndUnlistedManager, run as its own call by _retrying.
+    function fork_venuesAtDeployAndUnlistedManager() external {
         _launch();
         _modules();
         _postLaunch();
