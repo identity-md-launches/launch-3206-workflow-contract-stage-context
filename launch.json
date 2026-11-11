@@ -1,0 +1,40 @@
+{
+  "kind": "evm_project",
+  "token": {
+    "contract": "LaunchToken",
+    "name": "The Firm",
+    "symbol": "NOTSTOCK",
+    "decimals": 18
+  },
+  "contracts": [
+    {
+      "contract": "LpDesk",
+      "constructorArgs": [
+        "$token",
+        "0x8ad18e99f4c8d8406f9ba8899cf308000518a981",
+        "$owner"
+      ]
+    },
+    {
+      "contract": "FirmVault",
+      "constructorArgs": [
+        "$owner",
+        "$contract:LpDesk"
+      ]
+    },
+    {
+      "contract": "GenesisSplitter",
+      "constructorArgs": [
+        "$contract:LpDesk",
+        "0x8ad18e99f4c8d8406f9ba8899cf308000518a981"
+      ]
+    }
+  ],
+  "pool": {
+    "pairedCurrency": "0xff0c532fdb8cd566ae169c1cb157ff2bdc83e105",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "notes": "The Firm (NOTSTOCK) launch paired with IMD. LpDesk(token, operator = dev wallet 0x8ad18e99f4c8d8406f9ba8899cf308000518a981 as fixed by the brief, project wallet = $owner 0x3c587eff6c96eacf7e3dcc2cff6416161386e48c) creates Burner in its constructor; its modules PriceGuard, LpGovernor, VenueV3 and VenueV4 are not deployed by the launch but afterwards by anyone through LpDesk.deployModule(kind, code) with code hashes fixed in LpDesk. FirmVault(project wallet = $owner, LpDesk) receives the pool's 1% fee share once the project wallet calls the factory's setRequester(launchNumber, FirmVault); distribute(token) is open to anyone and buyback is restricted to LpDesk's operator. GenesisSplitter(LpDesk, dev wallet) split() sends 50/60 of its NOTSTOCK to LpDesk and 10/60 to the dev wallet once. No contract has an owner, pause, upgrade or mint. Not manifest fields, set in the launch request: poolBps 3000 and remainderTo = 0x3c587eff6c96eacf7e3dcc2cff6416161386e48c, which then transfers 600,000,000 NOTSTOCK to GenesisSplitter; the paying wallet must be the project wallet so it can call setRequester."
+}
